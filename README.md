@@ -98,6 +98,8 @@ flowchart LR
     └── style.css           # Styles
 ```
 
+Also at the root: `Dockerfile` (container image) and `.dockerignore` (files excluded from the build context).
+
 ## Getting Started
 
 ### Prerequisites
@@ -149,6 +151,36 @@ python app.py
 Open [http://127.0.0.1:8000](http://127.0.0.1:8000). Interactive API docs are available at [`/docs`](http://127.0.0.1:8000/docs).
 
 On first launch, the PostgreSQL checkpoint tables are created automatically.
+
+### Deploy on Render
+
+The repository ships with a `Dockerfile`, so it can be deployed as a Docker web service on [Render](https://render.com/).
+
+1. Create a **PostgreSQL** database on Render and copy its **External Database URL**.
+2. Create a new **Web Service**, connect your GitHub repository and select **Docker** as the runtime.
+3. In **Environment**, add the variables listed in [Configuration](#configuration) (`DATABASE_URL`, `GROQ_API_KEY`, `TAVILY_API_KEY`, `AVIATIONSTACK_API_KEY`, optionally `DEFAULT_ORIGIN_IATA`). Do not commit your `.env` file.
+4. Deploy. The app listens on port `8000`; if Render does not detect it, set the `PORT` environment variable to `8000`.
+5. Check `https://<your-service>.onrender.com/health`.
+
+> **Tip:** if the web service and the database are in the same Render region, use the **Internal Database URL** instead; it is faster and does not leave Render's network.
+
+### Run with Docker (local)
+
+Build the image:
+
+```bash
+docker build -t tripmate-ai .
+```
+
+Run the container, injecting your environment variables at runtime:
+
+```bash
+docker run --rm -p 8000:8000 --env-file .env tripmate-ai
+```
+
+Then open [http://localhost:8000](http://localhost:8000).
+
+> **Note:** inside a container, `localhost` refers to the container itself. If PostgreSQL runs on your host machine, use `host.docker.internal` in `DATABASE_URL` (Docker Desktop), or point to a hosted database.
 
 ## API Reference
 
@@ -206,7 +238,8 @@ curl -X POST http://127.0.0.1:8000/api/travel \
 - [ ] LLM-based extraction of origin, destination, dates and budget
 - [ ] Parallel execution of flight and hotel agents
 - [ ] Streaming responses in the UI
-- [ ] Docker setup and CI
+- [x] Docker support
+- [ ] CI pipeline
 - [ ] Automated tests
 
 ## Contributing
