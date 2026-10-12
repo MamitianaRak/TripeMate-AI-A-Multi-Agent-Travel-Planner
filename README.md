@@ -4,7 +4,7 @@
 
 **A multi-agent travel planner powered by LangGraph, MCP (Model Context Protocol) and FastAPI.**
 
-Turn a natural-language request into flight guidance, hotel suggestions, weather insights and a day-by-day itinerary.
+Turn a natural-language request into flight guidance, hotel suggestions, weather insights, a budget check and a day-by-day itinerary, reviewed by you before it is finalized.
 
 ![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/FastAPI-009688?logo=fastapi&logoColor=white)
@@ -40,45 +40,66 @@ Planning a trip usually means juggling flight trackers, hotel sites and spreadsh
 
 ## Features
 
+- **Supervisor routing** — a supervisor agent reads the request, extracts trip constraints (destination, origin, duration, budget, style) and runs only the specialist agents that are needed.
+- **Input guardrail** — requests unrelated to travel, or harmful, are blocked before any tool or agent runs.
+- **Human-in-the-loop approval** — the graph pauses on the draft itinerary; you approve it or send feedback, and the final plan is generated accordingly.
 - **MCP-based tool integration** — external services are exposed as MCP servers and consumed through `langchain-mcp-adapters`, so tools are decoupled from the agents.
 - **Flight guidance** — pulls airport and airline data from the AviationStack MCP server and asks the LLM for likely airports, airlines, duration, fare range and booking advice.
 - **Hotel discovery** — retrieves up-to-date accommodation suggestions through the Tavily MCP server.
 - **Weather insights** — a custom MCP server (OpenWeather) provides current conditions and a forecast for the destination.
-- **Itinerary generation** — an LLM agent combines flights, hotels and weather into a practical, day-by-day plan.
+- **Budget analysis** — a budget agent assesses cost categories, risks and feasibility against the user's budget.
+- **Itinerary generation** — an LLM agent combines flights, hotels, weather and budget into a practical, day-by-day draft.
 - **Structured final answer** — trip summary, flights, hotels, weather, itinerary, estimated budget and recommendations.
-- **Persistent state** — each conversation is checkpointed in PostgreSQL and identified by a `thread_id`.
+- **Workflow visibility in the UI** — the interface shows the guardrail result, the supervisor's reasoning and the agents selected for the request.
+- **PDF export** — the final travel plan can be downloaded as a PDF directly from the browser.
+- **Persistent state** — each conversation is checkpointed in PostgreSQL and identified by a `thread_id`, which also lets a paused run resume later.
+- **Prompt-size protection** — each section injected into a prompt is truncated to stay under the Groq per-request token limit.
 - **Web interface and REST API** — a lightweight frontend served by FastAPI, plus a JSON endpoint for integrations.
 
 ## Architecture
 
-The workflow is a linear LangGraph state graph. Each node reads from and writes to a shared `TravelState`. Agents never call external APIs directly: they go through an MCP client (`mcp_client.py`) that connects to three MCP servers.
+The workflow is a LangGraph state graph with a **supervisor** that dynamically selects which specialists run. Each node reads from and writes to a shared `TravelState`. Agents never call external APIs directly: they go through an MCP client (`mcp_client.py`) that connects to three MCP servers.
 
 ```mermaid
-flowchart LR
-    U([User request]) --> F[Flight agent]
+flowchart TD
+    U([User request]) --> S[Supervisor<br/>guardrail + routing]
+    S -- blocked --> B[Guardrail blocked] --> E1([End])
+    S -- selected agents --> F[Flight agent]
     F --> H[Hotel agent]
     H --> W[Weather agent]
-    W --> I[Itinerary agent]
-    I --> R[Final agent]
-    R --> A([Formatted answer])
+    W --> BU[Budget agent]
+    BU --> I[Itinerary agent<br/>draft]
+    I --> HA{{Human approval<br/>interrupt}}
+    HA -- approve / feedback --> R[Final agent]
+    R --> E2([Final answer])
 
     F -. MCP stdio .-> AV[[AviationStack MCP]]
     H -. MCP HTTP .-> TV[[Tavily MCP]]
     W -. MCP stdio .-> WX[[Weather MCP<br/>custom server]]
-    I --> LLM{{Groq LLM}}
-    R --> LLM
-    F --> LLM
 
-    DB[(PostgreSQL<br/>checkpointer)] -.- F
+    DB[(PostgreSQL<br/>checkpointer)] -.- HA
 ```
 
-| Step | Agent | Responsibility | MCP server / source |
-|------|-------|----------------|---------------------|
-| 1 | `flight_agent` | Reads airports and airlines, then generates flight guidance with the LLM | AviationStack MCP (`uvx aviationstack-mcp`, stdio) |
-| 2 | `hotel_agent` | Searches for relevant hotels at the destination | Tavily MCP (remote, streamable HTTP) |
-| 3 | `weather_agent` | Extracts the destination with the LLM, then fetches current weather and forecast | Weather MCP (`custom_weather_mcp_server.py`, stdio) |
-| 4 | `itinerary_agent` | Builds a practical, budget-aware itinerary | Groq (`openai/gpt-oss-120b`) |
-| 5 | `final_agent` | Formats the complete response into clear sections | Groq (`openai/gpt-oss-120b`) |
+The supervisor only visits the specialists it selected (always in the order flight → hotel → weather → budget); the itinerary agent always runs.
+
+| Step | Agent | Responsibility | Source |
+|------|-------|----------------|--------|
+| 1 | `supervisor` | Applies the input guardrail, picks the agents to run and extracts trip constraints | Groq (`openai/gpt-oss-120b`) |
+| 2 | `flight_agent` | Reads airports and airlines, then generates flight guidance | AviationStack MCP (`uvx aviationstack-mcp`, stdio) |
+| 3 | `hotel_agent` | Searches for relevant hotels at the destination | Tavily MCP (remote, streamable HTTP) |
+| 4 | `weather_agent` | Extracts the destination, then fetches current weather and forecast | Weather MCP (`custom_weather_mcp_server.py`, stdio) |
+| 5 | `budget_agent` | Assesses cost categories, risks and feasibility | Groq |
+| 6 | `itinerary_agent` | Builds a draft itinerary from all collected results | Groq |
+| 7 | `human_approval` | Pauses the graph with `interrupt()` until the user decides | LangGraph + PostgreSQL |
+| 8 | `final_agent` | Produces the final answer, applying the user's feedback if any | Groq |
+
+### Human-in-the-loop
+
+1. `POST /api/travel` runs the graph up to the draft itinerary. At `human_approval`, `interrupt()` saves the state in PostgreSQL and the API returns `requires_approval: true` with the draft.
+2. The user approves the draft, or rejects it with feedback.
+3. `POST /api/travel/approve` resumes the same `thread_id` with `Command(resume={"approved": ..., "feedback": ...})`. The final agent then polishes the approved draft, or rewrites it following the feedback.
+
+A revision is applied once; the revised plan is not submitted for a second approval.
 
 ### MCP servers
 
@@ -232,32 +253,68 @@ curl -X POST http://127.0.0.1:8000/api/travel \
   -d '{"message": "Plan a 3-day trip to Tokyo from Dhaka with a budget of $1200"}'
 ```
 
-**Response**
+**Response** — the run pauses on the draft itinerary:
 
 ```json
 {
   "success": true,
   "thread_id": "user_3f2a…",
-  "answer": "Formatted final travel plan (Markdown)",
+  "requires_approval": true,
+  "approval_request": "Please review the generated draft itinerary…",
+  "answer": "Draft itinerary (Markdown)",
+  "itinerary": "…",
   "flight_results": "…",
   "hotel_results": "…",
-  "itinerary": "…",
-  "llm_calls": 4
+  "weather_results": "…",
+  "budget_results": "…",
+  "selected_agents": ["flight_agent", "hotel_agent", "itinerary_agent"],
+  "trip_constraints": { "destination": "Tokyo", "duration": "3 days", "budget": "$1200" },
+  "supervisor_reasoning": "…",
+  "guardrail_allowed": true,
+  "llm_calls": 5
 }
 ```
 
+If the guardrail blocks the request, `guardrail_allowed` is `false`, `guardrail_reason` explains why and `answer` contains the message.
+
 **Errors:** `400` for an empty message, `500` with `{ "success": false, "error": "…" }` on internal failures.
+
+### `POST /api/travel/approve`
+
+Resume a paused run after reviewing the draft.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `thread_id` | string | Yes | The `thread_id` returned by `/api/travel`. |
+| `approved` | boolean | Yes | `true` to approve the draft, `false` to request a revision. |
+| `feedback` | string | If `approved` is `false` | Revision instructions for the final agent. |
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/travel/approve \
+  -H "Content-Type: application/json" \
+  -d '{"thread_id": "user_3f2a…", "approved": false, "feedback": "Add more food spots and cut the budget"}'
+```
+
+The response has the same shape as `/api/travel`, with `requires_approval: false`, `approved`, `human_feedback` and the final plan in `answer`.
+
+**Errors:** `400` if `approved` is `false` and `feedback` is empty, `500` on internal failures.
 
 ## Known Limitations
 
 - **No live fares.** The AviationStack MCP only exposes reference data (airports, airlines); fare ranges in the answer are LLM estimates, not real prices.
 - **Sequential pipeline.** Agents run one after another, and each MCP call may start a subprocess, which adds latency.
-- **Limited error handling.** Only the flight agent falls back gracefully; a failing hotel or weather MCP server currently fails the whole request.
+- **Limited error handling.** Only the flight agent and the supervisor fall back gracefully; a failing hotel or weather MCP server currently fails the whole request.
+- **Single revision round.** After feedback, the final plan is generated once and is not sent back for another approval.
+- **LLM rate limits.** On Groq's free tier, requests are capped at 8,000 tokens per minute for `openai/gpt-oss-120b`. Prompt sections are truncated to stay under it, which can drop details from long tool results.
 - **Cold start in containers.** The AviationStack MCP server is launched with `uvx`, which downloads the package on first use, so the first flight request after a deploy can be slow.
 
 ## Roadmap
 
 - [x] MCP integration (Tavily, AviationStack, custom Weather server)
+- [x] Supervisor routing and input guardrail
+- [x] Budget agent
+- [x] Human-in-the-loop approval
+- [ ] Multiple revision rounds before finalizing
 - [ ] Fare and price data (e.g. Amadeus)
 - [ ] LLM-based extraction of origin, destination, dates and budget
 - [ ] Parallel execution of flight, hotel and weather agents
