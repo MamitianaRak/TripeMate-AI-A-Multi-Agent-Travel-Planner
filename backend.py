@@ -127,13 +127,75 @@ def _llm_text(system_prompt: str, user_prompt: str) -> str:
 
 
 def _clip(value: Any, max_chars: int) -> str:
-    """Truncate a section so prompts stay under the Groq per-request token limit."""
+    """Safety net against the Groq per-request token limit.
+
+    Cuts at the last complete sentence or line, never in the middle of one.
+    Sections are already condensed at the source, so this rarely triggers.
+    """
     text = str(value or "").strip()
 
     if len(text) <= max_chars:
         return text
 
-    return text[:max_chars].rsplit(" ", 1)[0] + "\n[...truncated]"
+    window = text[:max_chars]
+    end = max(
+        window.rfind(". "),
+        window.rfind("! "),
+        window.rfind("? "),
+        window.rfind("\n"),
+    )
+
+    if end >= max_chars * 0.5:
+        return window[: end + 1].rstrip()
+
+    return window.rsplit(" ", 1)[0].rstrip()
+
+
+def _tool_text(result: Any) -> str:
+    """Flatten an MCP tool result (str or list of content blocks) into text."""
+    if isinstance(result, str):
+        return result
+
+    if isinstance(result, list):
+        parts = [
+            str(block.get("text", "")) if isinstance(block, dict) else str(block)
+            for block in result
+        ]
+        return "\n".join(part for part in parts if part)
+
+    return str(result)
+
+
+def _short_sentences(text: str, max_chars: int) -> str:
+    """Collapse whitespace and keep whole sentences within max_chars."""
+    return _clip(" ".join(str(text).split()), max_chars)
+
+
+def _compact_hotels(result: Any, max_results: int = 5, snippet_chars: int = 250) -> str:
+    """Turn the raw Tavily payload into a short list: name, link, one-line summary."""
+    text = _tool_text(result)
+
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return _short_sentences(text, 2500)
+
+    items = data.get("results") if isinstance(data, dict) else data
+
+    if not isinstance(items, list):
+        return _short_sentences(text, 2500)
+
+    lines = []
+    for index, item in enumerate(items[:max_results], 1):
+        if not isinstance(item, dict):
+            continue
+
+        title = item.get("title") or "Unknown"
+        url = item.get("url") or ""
+        summary = _short_sentences(item.get("content", ""), snippet_chars)
+        lines.append(f"{index}. {title} - {url}\n   {summary}")
+
+    return "\n".join(lines) or _short_sentences(text, 2500)
 
 
 def _json_from_llm(text: str) -> dict[str, Any]:
@@ -324,7 +386,9 @@ Generate:
 6. Peak season pricing warning
 7. Booking advice
 
-Return concise travel guidance.
+Return concise travel guidance: one or two short lines per point, about 200 words
+in total. Keep concrete facts (names, codes, durations, price ranges) and drop
+filler and repetition.
 """
 
 
@@ -391,7 +455,7 @@ def flight_agent(state: TravelState):
 
 def hotel_agent(state: TravelState):
     query = f"Best hotels for {state['user_query']}"
-    hotel_results = asyncio.run(tavily_mcp_search(query))
+    hotel_results = _compact_hotels(asyncio.run(tavily_mcp_search(query)))
 
     return {
         "hotel_results": hotel_results,
@@ -419,13 +483,10 @@ def weather_agent(state: TravelState):
     )
 
     return {
-        "weather_results": f"""
-        Current Weather:
-        {weather_data}
-
-        Forecast:
-        {forecast_data}
-        """,
+        "weather_results": (
+            f"Current Weather: {_short_sentences(_tool_text(weather_data), 800)}\n"
+            f"Forecast: {_short_sentences(_tool_text(forecast_data), 1200)}"
+        ),
         "messages": [
             AIMessage(
                 content="Weather information fetched"
@@ -462,6 +523,9 @@ Return:
 4. Overall feasibility
 
 If exact live prices are unavailable, clearly label estimates as approximate.
+
+Be dense and concise: use short bullet points with figures, about 250 words in
+total, no introduction or conclusion. Always finish every sentence.
 """
 
     response = llm.invoke(
@@ -508,6 +572,10 @@ Budget Results:
 
 Make the itinerary practical, budget-aware, and easy to follow.
 Create a clear draft that is ready for human review.
+
+Write it compactly: one short bullet per activity with the time of day and the
+key practical detail (place, cost, transport), no filler. Cover every day of the
+trip and always finish every sentence.
 """
 
     response = llm.invoke(
@@ -585,19 +653,19 @@ Supervisor Constraints:
 {state.get('trip_constraints', {})}
 
 Flights:
-{_clip(state.get('flight_results'), 1500)}
+{_clip(state.get('flight_results'), 2500)}
 
 Hotels:
 {_clip(state.get('hotel_results'), 2500)}
 
 Weather:
-{_clip(state.get('weather_results'), 1200)}
+{_clip(state.get('weather_results'), 2000)}
 
 Budget Analysis:
-{_clip(state.get('budget_results'), 1500)}
+{_clip(state.get('budget_results'), 2500)}
 
 Draft Itinerary:
-{_clip(state.get('itinerary'), 5000)}
+{state.get('itinerary', '')}
 
 Format the final answer beautifully using these sections:
 1. Trip Summary
@@ -614,6 +682,7 @@ Important:
 - Include weather-based travel advice.
 - Keep the response useful for real travel planning.
 - Incorporate the human feedback when revision was requested.
+- Never leave a sentence or section unfinished; keep each section tight so the whole answer fits.
 """
 
     response = llm.invoke(
