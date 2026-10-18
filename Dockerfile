@@ -1,26 +1,34 @@
-FROM python:3.11-slim
+FROM python:3.12-slim
 
-WORKDIR /app
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PORT=8000
 
-ENV PYTHONDONTWRITEBYTECODE=1
-ENV PYTHONUNBUFFERED=1
+WORKDIR /srv/tripmate
 
-RUN apt-get update && apt-get install -y \
-    build-essential \
-    git \
-    curl \
-    && rm -rf /var/lib/apt/lists/*
+# Non-root user with a home directory: uv keeps its tool cache there.
+RUN useradd --create-home --uid 10001 tripmate
 
 COPY requirements.txt .
+# uv provides `uvx`, used to launch the AviationStack MCP server.
+RUN pip install -r requirements.txt uv
 
-RUN pip install --no-cache-dir --upgrade pip
-RUN pip install --no-cache-dir -r requirements.txt
+COPY app ./app
 
-# uv provides `uvx`, used to launch the AviationStack MCP server
-RUN pip install --no-cache-dir uv
+USER tripmate
+ENV PATH="/home/tripmate/.local/bin:${PATH}"
 
-COPY . .
+# Install the AviationStack MCP server at build time so the first request
+# after a deploy does not have to download it (uvx reuses installed tools).
+# It requires Python 3.13+, which uv downloads into its own environment.
+RUN uv tool install aviationstack-mcp
 
 EXPOSE 8000
 
-CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD python -c "import os, urllib.request; urllib.request.urlopen(f'http://127.0.0.1:{os.environ[\"PORT\"]}/api/health', timeout=4)"
+
+# Render injects $PORT; proxy headers are trusted because Render terminates TLS.
+CMD ["sh", "-c", "exec uvicorn app.main:app --host 0.0.0.0 --port ${PORT} --proxy-headers --forwarded-allow-ips='*'"]

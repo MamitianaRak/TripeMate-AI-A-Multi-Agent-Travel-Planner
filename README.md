@@ -2,15 +2,16 @@
 
 # ✈️ TripMate AI
 
-**A multi-agent travel planner powered by LangGraph, MCP (Model Context Protocol) and FastAPI.**
+**A production-structured, multi-agent travel planner built with LangGraph, MCP, FastAPI and React.**
 
-Turn a natural-language request into flight guidance, hotel suggestions, weather insights, a budget check and a day-by-day itinerary, reviewed by you before it is finalized.
+Describe a trip in plain language. A supervisor agent routes the request to specialist agents (flights, hotels, weather, budget), drafts an itinerary, and **pauses for your review** before producing the final plan. Every agent step is streamed live to the UI.
 
-![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)
-![FastAPI](https://img.shields.io/badge/FastAPI-009688?logo=fastapi&logoColor=white)
+[![CI](https://github.com/MamitianaRak/TripeMate-AI-A-Multi-Agent-Travel-Planner/actions/workflows/ci.yml/badge.svg)](https://github.com/MamitianaRak/TripeMate-AI-A-Multi-Agent-Travel-Planner/actions/workflows/ci.yml)
+![Python](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-SSE-009688?logo=fastapi&logoColor=white)
 ![LangGraph](https://img.shields.io/badge/LangGraph-multi--agent-1C3C3C)
-![MCP](https://img.shields.io/badge/MCP-Model%20Context%20Protocol-6E56CF)
-![PostgreSQL](https://img.shields.io/badge/PostgreSQL-checkpointing-4169E1?logo=postgresql&logoColor=white)
+![MCP](https://img.shields.io/badge/MCP-3%20servers-6E56CF)
+![React](https://img.shields.io/badge/React-19%20%2B%20TypeScript-61DAFB?logo=react&logoColor=black)
 ![License](https://img.shields.io/badge/License-MIT-green)
 
 </div>
@@ -19,320 +20,407 @@ Turn a natural-language request into flight guidance, hotel suggestions, weather
 
 ## Table of Contents
 
-- [Overview](#overview)
-- [Features](#features)
+- [The problem](#the-problem)
+- [Key features](#key-features)
 - [Architecture](#architecture)
-- [Tech Stack](#tech-stack)
-- [Project Structure](#project-structure)
-- [Getting Started](#getting-started)
+- [Agent workflow](#agent-workflow)
+- [Human-in-the-loop](#human-in-the-loop)
+- [Tech stack](#tech-stack)
+- [Project structure](#project-structure)
+- [Getting started](#getting-started)
 - [Configuration](#configuration)
-- [API Reference](#api-reference)
-- [Known Limitations](#known-limitations)
+- [Testing and CI](#testing-and-ci)
+- [Deployment](#deployment)
+- [API reference](#api-reference)
+- [Engineering decisions](#engineering-decisions)
+- [Known limitations](#known-limitations)
 - [Roadmap](#roadmap)
-- [Contributing](#contributing)
 - [License](#license)
 
-## Overview
+## The problem
 
-Planning a trip usually means juggling flight trackers, hotel sites and spreadsheets. TripMate AI brings that research into a single conversational flow: describe your trip in plain language, and a pipeline of specialized agents gathers live data and assembles a structured, budget-aware travel plan.
+Planning a trip means juggling flight trackers, hotel sites, weather forecasts and a budget spreadsheet, then stitching it all into a plan. A single LLM prompt can produce a plan, but it hallucinates live data, wastes calls on information you did not ask for, and gives you no chance to correct it before it is "final".
 
-> **Example prompt:** *"Plan a 3-day trip to Tokyo from Dhaka with a budget of $1200."*
+TripMate AI treats trip planning as an **agentic workflow**:
 
-## Features
+- a **supervisor** decides which specialists are actually needed for this request;
+- **specialists** fetch live data through **MCP servers** instead of guessing;
+- a **guardrail** rejects off-topic or harmful requests before any tool runs;
+- a **human approval step** lets the traveler approve or redirect the draft;
+- the whole run is **checkpointed in PostgreSQL**, so a paused plan survives restarts.
 
-- **Supervisor routing** — a supervisor agent reads the request, extracts trip constraints (destination, origin, duration, budget, style) and runs only the specialist agents that are needed.
-- **Input guardrail** — requests unrelated to travel, or harmful, are blocked before any tool or agent runs.
-- **Human-in-the-loop approval** — the graph pauses on the draft itinerary; you approve it or send feedback, and the final plan is generated accordingly.
-- **MCP-based tool integration** — external services are exposed as MCP servers and consumed through `langchain-mcp-adapters`, so tools are decoupled from the agents.
-- **Flight guidance** — pulls airport and airline data from the AviationStack MCP server and asks the LLM for likely airports, airlines, duration, fare range and booking advice.
-- **Hotel discovery** — retrieves up-to-date accommodation suggestions through the Tavily MCP server.
-- **Weather insights** — a custom MCP server (OpenWeather) provides current conditions and a forecast for the destination.
-- **Budget analysis** — a budget agent assesses cost categories, risks and feasibility against the user's budget.
-- **Itinerary generation** — an LLM agent combines flights, hotels, weather and budget into a practical, day-by-day draft.
-- **Structured final answer** — trip summary, flights, hotels, weather, itinerary, estimated budget and recommendations.
-- **Workflow visibility in the UI** — the interface shows the guardrail result, the supervisor's reasoning and the agents selected for the request.
-- **PDF export** — the final travel plan can be downloaded as a PDF directly from the browser.
-- **Persistent state** — each conversation is checkpointed in PostgreSQL and identified by a `thread_id`, which also lets a paused run resume later.
-- **Prompt-size protection** — each section injected into a prompt is truncated to stay under the Groq per-request token limit.
-- **Web interface and REST API** — a lightweight frontend served by FastAPI, plus a JSON endpoint for integrations.
+> **Example:** *"Plan a 3-day trip to Tokyo from Dhaka with a budget of $1200."*
+
+## Key features
+
+| Area | What it does |
+|------|--------------|
+| **Supervisor routing** | Extracts trip constraints (destination, origin, duration, budget, style) and runs only the agents the request needs. |
+| **Input guardrail** | Blocks requests unrelated to travel, or harmful, before any agent or tool runs. Fails open on parsing errors. |
+| **MCP tool layer** | Hotels via Tavily MCP (HTTP), today's live departures on the requested route via AviationStack MCP (stdio), weather via a **custom OpenWeather MCP server**. |
+| **Human-in-the-loop** | The graph pauses with LangGraph `interrupt()` on the draft; the user approves or sends feedback; `Command(resume=...)` continues the run. |
+| **Live streaming** | Server-Sent Events stream one event per finished agent and **the draft and final plan token by token**, so text appears while it is being written; the UI also shows a live pipeline with per-agent status, timing and skipped agents. |
+| **Resilience** | A failing MCP server degrades its agent instead of failing the request; provider rate limits and timeouts map to clear 503/504 errors. |
+| **Complete answers, never truncated** | Answers cut by the output limit are automatically continued; prompts over budget are condensed by the LLM (facts kept) instead of being cut. |
+| **Production hygiene** | Typed settings, structured JSON logs with request IDs, rate limiting, CORS, health/readiness probes, non-root containers, CI. |
+| **Workspace UI** | Two-column layout, trip summary, tabs for each specialist's raw results, quick-feedback chips, light and dark themes, PDF export. |
 
 ## Architecture
 
-The workflow is a LangGraph state graph with a **supervisor** that dynamically selects which specialists run. Each node reads from and writes to a shared `TravelState`. Agents never call external APIs directly: they go through an MCP client (`mcp_client.py`) that connects to three MCP servers.
+![TripMate AI architecture: React frontend, FastAPI backend, LangGraph workflow with human-in-the-loop, MCP tool layer, Groq LLM, PostgreSQL and deployment on Render](docs/architecture.png)
+
+The diagrams below detail the request flow and the agent graph.
+
+```mermaid
+flowchart LR
+    subgraph Browser
+        UI[React + TypeScript SPA<br/>Zustand · Zod · SSE]
+    end
+
+    subgraph API[FastAPI service]
+        R[Routers<br/>/api/travel · /api/health]
+        S[TravelService]
+        G[LangGraph workflow]
+        RL[Rate limiter]
+    end
+
+    subgraph MCP[MCP servers]
+        TV[[Tavily MCP<br/>streamable HTTP]]
+        AV[[AviationStack MCP<br/>stdio · uvx]]
+        WX[[Weather MCP<br/>custom · stdio]]
+    end
+
+    UI -- "POST + SSE" --> RL --> R --> S --> G
+    G -- LLM calls --> LLM{{Groq<br/>gpt-oss-120b}}
+    G --> TV & AV & WX
+    WX --> OW[(OpenWeather API)]
+    G <-- checkpoints --> DB[(PostgreSQL)]
+```
+
+**Request flow**
+
+1. The SPA posts the request to `/api/travel/stream` and reads the SSE stream.
+2. `TravelService` runs the compiled LangGraph graph with a new `thread_id`.
+3. Each finished node emits a `step` event, and the itinerary agent streams its draft as `token` events while writing it; the run stops at the approval interrupt and emits a `result` event with the draft.
+4. The user's decision is posted to `/api/travel/approve/stream`, which resumes the same thread from its PostgreSQL checkpoint.
+
+## Agent workflow
 
 ```mermaid
 flowchart TD
-    U([User request]) --> S[Supervisor<br/>guardrail + routing]
-    S -- blocked --> B[Guardrail blocked] --> E1([End])
-    S -- selected agents --> F[Flight agent]
+    START([Request]) --> SUP[Supervisor<br/>guardrail + routing]
+    SUP -- blocked --> BLK[Guardrail response] --> END1([End])
+    SUP -- selected agents --> F[Flight agent]
     F --> H[Hotel agent]
     H --> W[Weather agent]
-    W --> BU[Budget agent]
-    BU --> I[Itinerary agent<br/>draft]
+    W --> B[Budget agent]
+    B --> I[Itinerary agent · draft]
     I --> HA{{Human approval<br/>interrupt}}
-    HA -- approve / feedback --> R[Final agent]
-    R --> E2([Final answer])
-
-    F -. MCP stdio .-> AV[[AviationStack MCP]]
-    H -. MCP HTTP .-> TV[[Tavily MCP]]
-    W -. MCP stdio .-> WX[[Weather MCP<br/>custom server]]
-
-    DB[(PostgreSQL<br/>checkpointer)] -.- HA
+    HA -- approve / feedback --> FIN[Final agent]
+    FIN --> END2([Final plan])
 ```
 
-The supervisor only visits the specialists it selected (always in the order flight → hotel → weather → budget); the itinerary agent always runs.
+Specialists run in a fixed order, but **only the ones the supervisor selected** are visited; the itinerary agent always runs.
 
-| Step | Agent | Responsibility | Source |
-|------|-------|----------------|--------|
-| 1 | `supervisor` | Applies the input guardrail, picks the agents to run and extracts trip constraints | Groq (`openai/gpt-oss-120b`) |
-| 2 | `flight_agent` | Reads airports and airlines, then generates flight guidance | AviationStack MCP (`uvx aviationstack-mcp`, stdio) |
-| 3 | `hotel_agent` | Searches for relevant hotels at the destination | Tavily MCP (remote, streamable HTTP) |
-| 4 | `weather_agent` | Extracts the destination, then fetches current weather and forecast | Weather MCP (`custom_weather_mcp_server.py`, stdio) |
-| 5 | `budget_agent` | Assesses cost categories, risks and feasibility | Groq |
-| 6 | `itinerary_agent` | Builds a draft itinerary from all collected results | Groq |
-| 7 | `human_approval` | Pauses the graph with `interrupt()` until the user decides | LangGraph + PostgreSQL |
-| 8 | `final_agent` | Produces the final answer, applying the user's feedback if any | Groq |
+| Agent | Responsibility | Source |
+|-------|----------------|--------|
+| `supervisor` | Guardrail check, agent selection, trip-constraint extraction | Groq |
+| `flight_agent` | Resolves origin and destination airports, fetches today's departures on that route, then summarizes airlines, flight numbers, duration, fare range and booking advice | AviationStack MCP + airportsdata + Groq |
+| `hotel_agent` | Top 5 hotels for the destination, condensed to name, link and one-line summary | Tavily MCP |
+| `weather_agent` | Current conditions and forecast for the destination | Weather MCP (custom) |
+| `budget_agent` | Cost categories, risks, savings and feasibility | Groq |
+| `itinerary_agent` | Compact day-by-day draft from all collected results | Groq |
+| `human_approval` | Pauses the graph until the user decides | LangGraph `interrupt()` |
+| `final_agent` | Polishes the approved draft, or rewrites it following the feedback | Groq |
 
-### Human-in-the-loop
+## Human-in-the-loop
 
-1. `POST /api/travel` runs the graph up to the draft itinerary. At `human_approval`, `interrupt()` saves the state in PostgreSQL and the API returns `requires_approval: true` with the draft.
-2. The user approves the draft, or rejects it with feedback.
-3. `POST /api/travel/approve` resumes the same `thread_id` with `Command(resume={"approved": ..., "feedback": ...})`. The final agent then polishes the approved draft, or rewrites it following the feedback.
+```text
+POST /api/travel/stream
+  supervisor → specialists → itinerary_agent → human_approval: interrupt()
+  ← state saved in PostgreSQL, SSE "result" with status=awaiting_approval
 
-A revision is applied once; the revised plan is not submitted for a second approval.
+POST /api/travel/approve/stream   { thread_id, approved, feedback }
+  Command(resume={approved, feedback}) → human_approval returns the decision
+  → final_agent → SSE "result" with status=completed
+```
 
-### MCP servers
+- The API checks the thread is actually waiting for approval: unknown threads return **404**, completed ones **409**.
+- Rejecting a draft requires feedback (**400** otherwise).
+- A revision is applied once; the revised plan is not sent back for a second approval (see [Roadmap](#roadmap)).
 
-| Server | Transport | Tools used |
-|--------|-----------|------------|
-| Tavily | Streamable HTTP (`mcp.tavily.com`) | `tavily_search` |
-| AviationStack | stdio, launched with `uvx aviationstack-mcp` | `list_airports`, `list_airlines` |
-| Weather (custom, OpenWeather) | stdio, launched with the current Python interpreter | `get_current_weather`, `get_forecast` |
-
-## Tech Stack
+## Tech stack
 
 | Layer | Technology |
 |-------|------------|
-| Backend | FastAPI, Uvicorn |
-| Orchestration | LangGraph, LangChain |
-| Tool protocol | MCP via `mcp` and `langchain-mcp-adapters` |
-| LLM | Groq (`openai/gpt-oss-120b`) |
-| Persistence | PostgreSQL via `langgraph-checkpoint-postgres` and `psycopg` |
-| External APIs | Tavily, AviationStack, OpenWeather |
-| Frontend | Jinja2, HTML, CSS, JavaScript |
+| Agents | LangGraph (state graph, conditional routing, `interrupt`/`Command`), LangChain Core |
+| LLM | Groq · `openai/gpt-oss-120b` (configurable) |
+| Tools | MCP via `mcp` and `langchain-mcp-adapters`; Tavily, AviationStack, custom FastMCP weather server |
+| API | FastAPI, Pydantic v2, pydantic-settings, Server-Sent Events, Uvicorn |
+| Persistence | PostgreSQL · `langgraph-checkpoint-postgres` with a `psycopg_pool` connection pool |
+| Frontend | React 19, TypeScript, Vite, Zustand, Zod, lucide-react, react-markdown, html2pdf.js |
+| Quality | Pytest + coverage (fake LLM and tools, no network), Ruff, Vitest + Testing Library |
+| Delivery | Docker (non-root, health check), nginx, Docker Compose, Render Blueprint, GitHub Actions |
 
-## Project Structure
+## Project structure
 
 ```text
 .
-├── app.py                  # FastAPI application and routes
-├── backend.py              # LangGraph workflow, agents and checkpointer
-├── mcp_client.py           # MCP client config and tool wrappers
-├── custom_weather_mcp_server.py  # Custom OpenWeather MCP server
-├── requirements.txt        # Pinned Python dependencies
-├── tools/                  # Legacy direct integrations (no longer used by the graph)
-│   ├── fligth_tool.py      # Route parsing and AviationStack REST calls
-│   └── tavily_tools.py     # Tavily search wrapper
-├── templates/
-│   └── index.html          # Web UI template
-└── static/
-    ├── script.js           # Frontend logic
-    └── style.css           # Styles
+├── app/                          # FastAPI backend
+│   ├── main.py                   # App factory, lifespan wiring, middleware
+│   ├── api/                      # HTTP layer
+│   │   ├── travel.py             #   JSON + SSE endpoints
+│   │   ├── health.py             #   liveness / readiness probes
+│   │   ├── schemas.py            #   request / response models
+│   │   ├── deps.py               #   service injection, rate limiting
+│   │   └── errors.py             #   consistent {success, error, code} errors
+│   ├── core/                     # Cross-cutting concerns
+│   │   ├── config.py             #   typed settings from env / .env
+│   │   ├── logging.py            #   text or JSON logs with request IDs
+│   │   ├── llm.py                #   LLM factory (timeouts, retries)
+│   │   ├── errors.py             #   provider error classification
+│   │   └── rate_limit.py         #   sliding-window limiter
+│   ├── agents/                   # LangGraph workflow
+│   │   ├── graph.py              #   graph construction and routing
+│   │   ├── nodes.py              #   agent implementations
+│   │   ├── prompts.py            #   all prompt templates
+│   │   ├── state.py              #   TravelState and constants
+│   │   ├── text.py               #   condensing helpers
+│   │   └── tools.py              #   tool interface (Protocol)
+│   ├── integrations/
+│   │   └── mcp_toolbox.py        # MCP client implementing the tool interface
+│   ├── mcp_servers/
+│   │   └── weather_server.py     # Custom OpenWeather MCP server
+│   └── services/
+│       └── travel_service.py     # Start / resume / stream use cases
+├── frontend/                     # React + TypeScript SPA
+│   ├── src/api/                  #   typed client, Zod schemas, SSE parser
+│   ├── src/store/                #   Zustand plan state machine
+│   ├── src/components/           #   planner, agent pipeline, workspace, approval
+│   ├── Dockerfile                #   multi-stage build → nginx
+│   └── nginx.conf.template       #   SPA + /api proxy with buffering off
+├── tests/                        # Pytest suite (fakes, no network)
+├── .github/workflows/ci.yml      # Lint, tests, builds
+├── Dockerfile                    # API image
+├── docker-compose.yml            # PostgreSQL + API + frontend
+├── render.yaml                   # Render Blueprint
+├── .env.example                  # Configuration template
+└── run.py                        # Local dev entry point
 ```
 
-Also at the root: `Dockerfile` (container image) and `.dockerignore` (files excluded from the build context).
-
-## Getting Started
+## Getting started
 
 ### Prerequisites
 
-- Python 3.10 or newer
-- A running PostgreSQL database (local or hosted)
-- [`uv`](https://docs.astral.sh/uv/) installed (provides `uvx`, used to launch the AviationStack MCP server)
-- API keys for [Groq](https://console.groq.com/), [Tavily](https://tavily.com/), [AviationStack](https://aviationstack.com/) and [OpenWeather](https://openweathermap.org/api)
+- Python 3.12, Node.js 24
+- PostgreSQL (local, Docker or hosted)
+- [`uv`](https://docs.astral.sh/uv/), which provides `uvx` to launch the AviationStack MCP server
+- API keys: [Groq](https://console.groq.com/), [Tavily](https://tavily.com/), [AviationStack](https://aviationstack.com/), [OpenWeather](https://openweathermap.org/api)
 
-### Installation
+### 1. Backend
 
 ```bash
-git clone https://github.com/<your-username>/TripeMate-AI.git
-cd TripeMate-AI
+git clone https://github.com/MamitianaRak/TripeMate-AI-A-Multi-Agent-Travel-Planner.git
+cd TripeMate-AI-A-Multi-Agent-Travel-Planner
 
 python -m venv .venv
-source .venv/bin/activate        # Windows: .venv\Scripts\activate
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
+pip install -r requirements-dev.txt
 
-pip install -r requirements.txt
+cp .env.example .env               # then fill in the keys and DATABASE_URL
+python run.py                      # http://127.0.0.1:8000/docs
 ```
 
-### Configuration
+The checkpoint tables are created on first start. If a required variable is missing, the app refuses to start and names it.
 
-Create a `.env` file at the project root:
-
-```env
-DATABASE_URL=postgresql://user:password@localhost:5432/travel_db
-GROQ_API_KEY=your_groq_api_key
-TAVILY_API_KEY=your_tavily_api_key
-AVIATIONSTACK_API_KEY=your_aviationstack_api_key
-OPENWEATHER_API_KEY=your_openweather_api_key
-```
-
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `DATABASE_URL` | Yes | PostgreSQL connection string. `sslmode=require` is appended automatically if absent. |
-| `GROQ_API_KEY` | Yes | API key for the Groq LLM. The app refuses to start without it. |
-| `TAVILY_API_KEY` | Yes | API key for hotel search (Tavily MCP). |
-| `AVIATIONSTACK_API_KEY` | Yes | API key for airport and airline data (AviationStack MCP). |
-| `OPENWEATHER_API_KEY` | Yes | API key for current weather and forecast (Weather MCP). |
-| `LANGSMITH_*` | No | Optional LangSmith tracing variables. |
-
-> ⚠️ Never commit your `.env` file. It is already listed in `.gitignore`.
-
-### Run
+### 2. Frontend
 
 ```bash
-python app.py
+cd frontend
+npm ci
+npm run dev                        # http://localhost:5173
 ```
 
-Open [http://127.0.0.1:8000](http://127.0.0.1:8000). Interactive API docs are available at [`/docs`](http://127.0.0.1:8000/docs).
+In development, Vite proxies `/api` to `http://127.0.0.1:8000`, so no CORS setup is needed.
 
-On first launch, the PostgreSQL checkpoint tables are created automatically.
-
-### Deploy on Render
-
-The repository ships with a `Dockerfile`, so it can be deployed as a Docker web service on [Render](https://render.com/).
-
-1. Create a **PostgreSQL** database on Render and copy its **External Database URL**.
-2. Create a new **Web Service**, connect your GitHub repository and select **Docker** as the runtime.
-3. In **Environment**, add the variables listed in [Configuration](#configuration) (`DATABASE_URL`, `GROQ_API_KEY`, `TAVILY_API_KEY`, `AVIATIONSTACK_API_KEY`, `OPENWEATHER_API_KEY`). Do not commit your `.env` file.
-4. Deploy. The app listens on port `8000`; if Render does not detect it, set the `PORT` environment variable to `8000`.
-5. Check `https://<your-service>.onrender.com/health`.
-
-> **Tip:** if the web service and the database are in the same Render region, use the **Internal Database URL** instead; it is faster and does not leave Render's network.
-
-### Run with Docker (local)
-
-Build the image:
+### Alternative: everything with Docker Compose
 
 ```bash
-docker build -t tripmate-ai .
+cp .env.example .env               # fill in the API keys
+docker compose up --build          # http://localhost:8080
 ```
 
-Run the container, injecting your environment variables at runtime:
+Compose starts PostgreSQL, the API and the nginx-served frontend; the database URL is set for you.
+
+## Configuration
+
+All settings are read from the environment (or `.env`) by [`app/core/config.py`](app/core/config.py). See [`.env.example`](.env.example) for the full list.
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `GROQ_API_KEY` | Yes | | Groq API key |
+| `TAVILY_API_KEY` | Yes | | Hotel search (Tavily MCP) |
+| `AVIATIONSTACK_API_KEY` | Yes | | Live departure boards (AviationStack MCP, free plan is enough) |
+| `OPENWEATHER_API_KEY` | Yes | | Weather (custom MCP server) |
+| `DATABASE_URL` | Yes | | PostgreSQL connection string |
+| `DATABASE_SSLMODE` | No | `require` | Appended to the URL when it has no `sslmode`; use `disable` for a local Postgres |
+| `GROQ_MODEL` | No | `openai/gpt-oss-120b` | Model name |
+| `LLM_TIMEOUT_SECONDS` / `LLM_MAX_RETRIES` | No | `60` / `2` | LLM client resilience |
+| `LLM_REASONING_EFFORT` | No | `low` | Reasoning effort of `gpt-oss`; leaves more output tokens for the answer (empty for non-reasoning models) |
+| `LLM_MAX_CONTINUATIONS` | No | `2` | Times a truncated answer is continued |
+| `PROMPT_BUDGET_TOKENS` | No | `4000` | Prompt size above which sections are condensed by the LLM |
+| `CORS_ORIGINS` | No | `http://localhost:5173` | Comma-separated allowed origins |
+| `RATE_LIMIT_REQUESTS` / `RATE_LIMIT_WINDOW_SECONDS` | No | `10` / `60` | Per-IP limit on `/api/travel*` (`0` disables) |
+| `TRUST_PROXY_HEADERS` | No | `false` | Read the client IP from `X-Forwarded-For` (enable only behind a proxy) |
+| `LOG_LEVEL` / `LOG_JSON` | No | `INFO` / `false` | Log verbosity and JSON log lines |
+| `VITE_API_BASE_URL` | Frontend | empty | API URL when the frontend is hosted separately |
+
+## Testing and CI
 
 ```bash
-docker run --rm -p 8000:8000 --env-file .env tripmate-ai
+pytest --cov=app            # backend: 65 tests, ~94% coverage, no network
+ruff check app tests        # lint
+cd frontend && npm test     # frontend: Vitest + Testing Library
+npm run typecheck && npm run build
 ```
 
-Then open [http://localhost:8000](http://localhost:8000).
+- The backend suite runs the **real compiled graph** with a fake LLM, fake MCP tools and an in-memory checkpointer. It covers routing, the guardrail, the interrupt/resume flow, degraded MCP servers, SSE streaming, error mapping and rate limiting.
+- The frontend suite mocks `fetch` with chunked SSE streams and tests the full draft → approve flow, validation and error display.
+- [GitHub Actions](.github/workflows/ci.yml) runs both suites on every push and pull request, then builds both Docker images with layer caching.
 
-> **Note:** inside a container, `localhost` refers to the container itself. If PostgreSQL runs on your host machine, use `host.docker.internal` in `DATABASE_URL` (Docker Desktop), or point to a hosted database.
+## Deployment
 
-## API Reference
+### Render (Blueprint)
 
-### `GET /health`
+[`render.yaml`](render.yaml) defines a managed PostgreSQL database, the Docker API service and the static frontend.
 
-Health check.
+1. In Render, choose **New → Blueprint** and select this repository.
+2. Fill in the secret values when prompted: the four API keys, plus `CORS_ORIGINS` (frontend URL) on the API and `VITE_API_BASE_URL` (API URL) on the frontend.
+3. Deploy, then check `https://<api-service>.onrender.com/api/health`.
+
+The API image runs as a non-root user, listens on `$PORT`, exposes a Docker health check and pre-installs the AviationStack MCP server so the first request does not download it.
+
+### Health probes
+
+- `GET /api/health`: liveness, always `200` while the process is up.
+- `GET /api/health/ready`: readiness, checks configuration and the checkpoint database, returns `503` when degraded.
+
+## API reference
+
+Interactive documentation is served at `/docs`. All errors share one shape:
 
 ```json
-{ "status": "ok", "message": "AI Travel Planner API is running" }
+{ "success": false, "error": "Human-readable message", "code": "machine_code" }
 ```
 
-### `POST /api/travel`
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/api/travel` | Start a plan; returns when the draft is ready |
+| `POST` | `/api/travel/approve` | Approve or revise the draft; returns the final plan |
+| `POST` | `/api/travel/stream` | Same as `/api/travel`, as Server-Sent Events |
+| `POST` | `/api/travel/approve/stream` | Same as `/api/travel/approve`, as Server-Sent Events |
+| `GET` | `/api/health` | Liveness probe |
+| `GET` | `/api/health/ready` | Readiness probe |
 
-Generate a travel plan.
-
-**Request body**
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `message` | string | Yes | Natural-language trip request. |
-| `thread_id` | string | No | Reuse a previous conversation. A new one is generated if omitted. |
+**Start a plan**
 
 ```bash
-curl -X POST http://127.0.0.1:8000/api/travel \
+curl -N -X POST http://127.0.0.1:8000/api/travel/stream \
   -H "Content-Type: application/json" \
   -d '{"message": "Plan a 3-day trip to Tokyo from Dhaka with a budget of $1200"}'
 ```
 
-**Response** — the run pauses on the draft itinerary:
+```text
+event: step
+data: {"node": "supervisor", "label": "Supervisor", "thread_id": "trip_3f2a…", "selected_agents": ["flight_agent", "hotel_agent", "itinerary_agent"], …}
 
-```json
-{
-  "success": true,
-  "thread_id": "user_3f2a…",
-  "requires_approval": true,
-  "approval_request": "Please review the generated draft itinerary…",
-  "answer": "Draft itinerary (Markdown)",
-  "itinerary": "…",
-  "flight_results": "…",
-  "hotel_results": "…",
-  "weather_results": "…",
-  "budget_results": "…",
-  "selected_agents": ["flight_agent", "hotel_agent", "itinerary_agent"],
-  "trip_constraints": { "destination": "Tokyo", "duration": "3 days", "budget": "$1200" },
-  "supervisor_reasoning": "…",
-  "guardrail_allowed": true,
-  "llm_calls": 5
-}
+event: step
+data: {"node": "flight_agent", "label": "Flight Agent", "thread_id": "trip_3f2a…"}
+
+…
+
+event: token
+data: {"node": "itinerary_agent", "text": "## Day 1"}
+
+event: token
+data: {"node": "itinerary_agent", "text": " — Arrival in Tokyo"}
+
+…
+
+event: result
+data: {"thread_id": "trip_3f2a…", "status": "awaiting_approval", "requires_approval": true, "answer": "<draft itinerary>", …}
 ```
 
-If the guardrail blocks the request, `guardrail_allowed` is `false`, `guardrail_reason` explains why and `answer` contains the message.
+| Event | When | Payload |
+|-------|------|---------|
+| `step` | An agent has finished | `node`, `label`, `thread_id` (+ routing details for `supervisor`) |
+| `token` | The itinerary or final agent is writing | `node`, `text` (append in order; the concatenation equals the final text) |
+| `result` | The run paused for approval or completed | Full result object (see below) |
+| `error` | The run failed mid-stream | `{success: false, error, code}` |
 
-**Errors:** `400` for an empty message, `500` with `{ "success": false, "error": "…" }` on internal failures.
+Only user-facing text is streamed: supervisor JSON, specialist analyses and internal condensing calls are never sent as tokens.
 
-### `POST /api/travel/approve`
-
-Resume a paused run after reviewing the draft.
+**Review the draft**
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `thread_id` | string | Yes | The `thread_id` returned by `/api/travel`. |
-| `approved` | boolean | Yes | `true` to approve the draft, `false` to request a revision. |
-| `feedback` | string | If `approved` is `false` | Revision instructions for the final agent. |
+| `thread_id` | string | Yes | Returned by the start call |
+| `approved` | boolean | Yes | `true` to approve, `false` to request a revision |
+| `feedback` | string | When `approved` is `false` | Revision instructions |
 
 ```bash
 curl -X POST http://127.0.0.1:8000/api/travel/approve \
   -H "Content-Type: application/json" \
-  -d '{"thread_id": "user_3f2a…", "approved": false, "feedback": "Add more food spots and cut the budget"}'
+  -d '{"thread_id": "trip_3f2a…", "approved": false, "feedback": "Cheaper hotels and one free day"}'
 ```
 
-The response has the same shape as `/api/travel`, with `requires_approval: false`, `approved`, `human_feedback` and the final plan in `answer`.
+**Result fields:** `thread_id`, `status` (`awaiting_approval` | `completed`), `requires_approval`, `answer`, `approval_request`, `itinerary`, `flight_results`, `hotel_results`, `weather_results`, `budget_results`, `selected_agents`, `trip_constraints`, `supervisor_reasoning`, `guardrail_allowed`, `guardrail_reason`, `approved`, `human_feedback`, `llm_calls`.
 
-**Errors:** `400` if `approved` is `false` and `feedback` is empty, `500` on internal failures.
+| Status | Code | When |
+|--------|------|------|
+| 400 | `invalid_request` | Empty message, missing feedback on rejection, invalid body |
+| 404 | `thread_not_found` | Unknown `thread_id` on review |
+| 409 | `no_pending_approval` | The plan is not waiting for approval |
+| 429 | `rate_limited` | Too many requests from this IP (`Retry-After` header set) |
+| 503 | `llm_rate_limited` / `upstream_unavailable` | Provider rate limit or outage |
+| 504 | `upstream_timeout` | An external service timed out |
+| 500 | `internal_error` | Unexpected failure (details only in server logs) |
 
-## Known Limitations
+On the streaming endpoints, failures that happen mid-run arrive as an `error` event with the same body.
 
-- **No live fares.** The AviationStack MCP only exposes reference data (airports, airlines); fare ranges in the answer are LLM estimates, not real prices.
-- **Sequential pipeline.** Agents run one after another, and each MCP call may start a subprocess, which adds latency.
-- **Limited error handling.** Only the flight agent and the supervisor fall back gracefully; a failing hotel or weather MCP server currently fails the whole request.
-- **Single revision round.** After feedback, the final plan is generated once and is not sent back for another approval.
-- **LLM rate limits.** On Groq's free tier, requests are capped at 8,000 tokens per minute for `openai/gpt-oss-120b`. Prompt sections are truncated to stay under it, which can drop details from long tool results.
-- **Cold start in containers.** The AviationStack MCP server is launched with `uvx`, which downloads the package on first use, so the first flight request after a deploy can be slow.
+## Engineering decisions
+
+- **Dependency injection for testability.** The graph is built by `build_travel_graph(llm, tools, checkpointer)`. Agents depend on a `TravelTools` protocol, not on MCP, so the full workflow runs in tests with fakes and no network.
+- **App factory and lifespan.** Nothing connects at import time; the database pool, MCP client and LLM are created in the FastAPI lifespan and closed on shutdown.
+- **Connection pool for checkpoints.** `PostgresSaver` uses a `psycopg_pool` pool rather than one shared connection, so concurrent requests do not serialize on a single socket.
+- **Sync endpoints on purpose.** The graph and the MCP calls are blocking, so the endpoints are plain `def`: FastAPI runs them in a threadpool and the event loop stays free. SSE streams are driven from one dedicated worker thread so LangGraph's context variables stay valid.
+- **Graceful degradation.** Each specialist catches its own tool failures and returns a clear "unavailable" note, so one MCP outage still produces a plan.
+- **Errors that do not leak.** Known provider failures map to actionable 503/504 responses; unexpected errors return a generic message while the stack trace goes to the logs with the request ID.
+- **No truncated answers.** LLM output is never trimmed. When the model stops on its output limit (`finish_reason="length"`), it is asked to continue from where it stopped, up to `LLM_MAX_CONTINUATIONS` times. When a prompt would exceed `PROMPT_BUDGET_TOKENS`, the largest sections are condensed by the LLM with an instruction to keep every fact; the reviewed draft is condensed last. `reasoning_effort=low` keeps `gpt-oss` from spending its output budget on reasoning.
+- **Fewer LLM calls.** The weather agent reuses the destination extracted by the supervisor instead of making its own extraction call.
+- **Route-specific flights within the free plan.** The supervisor proposes IATA codes, which are validated offline against `airportsdata` (no quota used, invented codes rejected, city-name fallback). The flight agent then reads one departure board, the only route-capable AviationStack feature on the free plan, and keeps flights landing at any airport of the destination city (e.g. NRT and HND for Tokyo), with codeshares removed.
+- **Secrets stay out of logs.** HTTP client logging is lowered so the Tavily MCP URL (which carries the key) is never written to logs; `.env` is excluded from Docker images and git.
+
+## Known limitations
+
+- **No live fares.** AviationStack provides schedules, not prices; fare ranges are LLM estimates and are labeled as such.
+- **Direct flights, today only.** Live data comes from today's departure board of the origin airport (first 100 departures), so connecting itineraries and future dates rely on the LLM's general knowledge, flagged as not live.
+- **AviationStack free-plan quota.** Each plan that includes the flight agent uses one API request (100 per month on the free plan).
+- **Per-instance rate limiting.** The limiter is in memory; several API instances would need a shared store such as Redis.
+- **No authentication.** The API is public, protected only by rate limiting and CORS.
+- **Single revision round.** After feedback, the final plan is generated once without a second approval.
+- **Groq free tier.** `openai/gpt-oss-120b` is limited to 8,000 tokens per minute on the free tier; heavy use triggers `503 llm_rate_limited`.
 
 ## Roadmap
 
-- [x] MCP integration (Tavily, AviationStack, custom Weather server)
-- [x] Supervisor routing and input guardrail
-- [x] Budget agent
-- [x] Human-in-the-loop approval
+- [x] Route-specific live flight lookup
+- [ ] Real fares and connecting itineraries (e.g. Amadeus or Duffel)
 - [ ] Multiple revision rounds before finalizing
-- [ ] Fare and price data (e.g. Amadeus)
-- [ ] LLM-based extraction of origin, destination, dates and budget
-- [ ] Parallel execution of flight, hotel and weather agents
-- [ ] Graceful degradation when an MCP server is unavailable
-- [ ] Streaming responses in the UI
-- [x] Docker support
-- [ ] CI pipeline
-- [ ] Automated tests
-
-## Contributing
-
-Contributions are welcome.
-
-1. Fork the repository
-2. Create a feature branch: `git checkout -b feature/my-feature`
-3. Commit your changes
-4. Push the branch and open a pull request
+- [ ] Parallel execution of independent specialists
+- [ ] Offline evaluation set for plan quality
+- [ ] LangSmith tracing dashboard and metrics
+- [ ] User accounts and saved trips
 
 ## License
 
-Distributed under the MIT License. See [LICENSE](LICENSE) for details.
+Distributed under the MIT License. See [LICENSE](LICENSE).

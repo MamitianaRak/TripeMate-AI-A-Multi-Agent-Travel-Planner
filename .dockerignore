@@ -1,7 +1,26 @@
+# Secrets
+.env
+.env.*
+!.env.example
+
+# VCS, editors, caches
+.git
+.github
+.vscode
+__pycache__/
+*.py[cod]
+.pytest_cache
+.ruff_cache
+.coverage
+htmlcov
+
 # Environments
 .venv
 env/
 venv/
 ENV/
-env.bak/
-venv.bak/
+
+# Not needed in the API image
+frontend
+tests
+docs
