@@ -18,8 +18,9 @@ services:
         fromDatabase:
           name: tripmate-db
           property: connectionString
+      # Internal URL inside Render's network: use SSL when offered, without requiring it.
       - key: DATABASE_SSLMODE
-        value: require
+        value: prefer
       - key: ENVIRONMENT
         value: production
       - key: LOG_JSON
