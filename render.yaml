@@ -1,11 +1,8 @@
-# Render Blueprint: managed PostgreSQL, Docker API service and static frontend.
+# Render Blueprint: Docker API service and static frontend.
 # Secrets marked `sync: false` are asked for when the Blueprint is created.
-databases:
-  - name: tripmate-db
-    plan: free
-    databaseName: tripmate
-    user: tripmate
-
+#
+# The API uses an existing PostgreSQL database (Render allows a single free
+# database per account): paste its Internal Database URL into DATABASE_URL.
 services:
   - type: web
     name: tripmate-api
@@ -15,9 +12,7 @@ services:
     healthCheckPath: /api/health
     envVars:
       - key: DATABASE_URL
-        fromDatabase:
-          name: tripmate-db
-          property: connectionString
+        sync: false # Internal Database URL of your Render PostgreSQL
       # Internal URL inside Render's network: use SSL when offered, without requiring it.
       - key: DATABASE_SSLMODE
         value: prefer

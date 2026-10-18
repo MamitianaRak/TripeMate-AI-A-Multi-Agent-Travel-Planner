@@ -292,11 +292,12 @@ npm run typecheck && npm run build
 
 ### Render (Blueprint)
 
-[`render.yaml`](render.yaml) defines a managed PostgreSQL database, the Docker API service and the static frontend.
+[`render.yaml`](render.yaml) defines the Docker API service and the static frontend. It reuses an existing Render PostgreSQL database, since Render allows a single free database per account.
 
-1. In Render, choose **New → Blueprint** and select this repository.
-2. Fill in the secret values when prompted: the four API keys, plus `CORS_ORIGINS` (frontend URL) on the API and `VITE_API_BASE_URL` (API URL) on the frontend.
-3. Deploy, then check `https://<api-service>.onrender.com/api/health`.
+1. Create a PostgreSQL database on Render if you do not have one, and copy its **Internal Database URL**.
+2. In Render, choose **New → Blueprint** and select this repository.
+3. Fill in the secret values when prompted: `DATABASE_URL`, the four API keys and `CORS_ORIGINS` (frontend URL) on the API, and `VITE_API_BASE_URL` (API URL) on the frontend.
+4. Deploy, then check `https://<api-service>.onrender.com/api/health`.
 
 The API image runs as a non-root user, listens on `$PORT`, exposes a Docker health check and pre-installs the AviationStack MCP server so the first request does not download it.
 
