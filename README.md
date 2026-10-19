@@ -6,6 +6,8 @@
 
 Describe a trip in plain language. A supervisor agent routes the request to specialist agents (flights, hotels, weather, budget), drafts an itinerary, and **pauses for your review** before producing the final plan. Every agent step is streamed live to the UI.
 
+**Live demo:** https://tripmate-web-bcd8.onrender.com (free hosting: the first request after a pause can take about a minute while the backend wakes up)
+
 [![CI](https://github.com/MamitianaRak/TripeMate-AI-A-Multi-Agent-Travel-Planner/actions/workflows/ci.yml/badge.svg)](https://github.com/MamitianaRak/TripeMate-AI-A-Multi-Agent-Travel-Planner/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/FastAPI-SSE-009688?logo=fastapi&logoColor=white)
