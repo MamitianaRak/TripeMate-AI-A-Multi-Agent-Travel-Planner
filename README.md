@@ -264,6 +264,7 @@ All settings are read from the environment (or `.env`) by [`app/core/config.py`]
 | `TAVILY_API_KEY` | Yes | | Hotel search (Tavily MCP) |
 | `AVIATIONSTACK_API_KEY` | Yes | | Live departure boards (AviationStack MCP, free plan is enough) |
 | `OPENWEATHER_API_KEY` | Yes | | Weather (custom MCP server) |
+| `MCP_TIMEOUT_SECONDS` | No | `60` | Maximum wait per MCP call, including the first start of a stdio server |
 | `DATABASE_URL` | Yes | | PostgreSQL connection string |
 | `DATABASE_SSLMODE` | No | `require` | Appended to the URL when it has no `sslmode`; use `disable` for a local Postgres |
 | `GROQ_MODEL` | No | `openai/gpt-oss-120b` | Model name |
@@ -397,6 +398,7 @@ On the streaming endpoints, failures that happen mid-run arrive as an `error` ev
 - **App factory and lifespan.** Nothing connects at import time; the database pool, MCP client and LLM are created in the FastAPI lifespan and closed on shutdown.
 - **Connection pool for checkpoints.** `PostgresSaver` uses a `psycopg_pool` pool rather than one shared connection, so concurrent requests do not serialize on a single socket.
 - **Sync endpoints on purpose.** The graph and the MCP calls are blocking, so the endpoints are plain `def`: FastAPI runs them in a threadpool and the event loop stays free. SSE streams are driven from one dedicated worker thread so LangGraph's context variables stay valid.
+- **One event loop for MCP.** The MCP clients are async while the graph is sync. The toolbox runs one event loop in a background thread and submits every call to it, with a timeout (`MCP_TIMEOUT_SECONDS`). Calling `asyncio.run` per call would fail as soon as the caller already runs a loop (async endpoint, `graph.ainvoke`, notebook), and a hanging server would block a worker forever.
 - **Graceful degradation.** Each specialist catches its own tool failures and returns a clear "unavailable" note, so one MCP outage still produces a plan.
 - **Errors that do not leak.** Known provider failures map to actionable 503/504 responses; unexpected errors return a generic message while the stack trace goes to the logs with the request ID.
 - **No truncated answers.** LLM output is never trimmed. When the model stops on its output limit (`finish_reason="length"`), it is asked to continue from where it stopped, up to `LLM_MAX_CONTINUATIONS` times. When a prompt would exceed `PROMPT_BUDGET_TOKENS`, the largest sections are condensed by the LLM with an instruction to keep every fact; the reviewed draft is condensed last. `reasoning_effort=low` keeps `gpt-oss` from spending its output budget on reasoning.
