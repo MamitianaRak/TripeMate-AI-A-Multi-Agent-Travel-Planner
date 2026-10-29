@@ -32,6 +32,7 @@ Describe a trip in plain language. A supervisor agent routes the request to spec
 - [Getting started](#getting-started)
 - [Configuration](#configuration)
 - [Testing and CI](#testing-and-ci)
+- [Trajectory evaluation](#trajectory-evaluation)
 - [Deployment](#deployment)
 - [API reference](#api-reference)
 - [Engineering decisions](#engineering-decisions)
@@ -281,8 +282,8 @@ All settings are read from the environment (or `.env`) by [`app/core/config.py`]
 ## Testing and CI
 
 ```bash
-pytest --cov=app            # backend: 65 tests, ~94% coverage, no network
-ruff check app tests        # lint
+pytest --cov=app            # backend: 74 tests, ~94% coverage, no network
+ruff check app tests evals  # lint
 cd frontend && npm test     # frontend: Vitest + Testing Library
 npm run typecheck && npm run build
 ```
@@ -290,6 +291,38 @@ npm run typecheck && npm run build
 - The backend suite runs the **real compiled graph** with a fake LLM, fake MCP tools and an in-memory checkpointer. It covers routing, the guardrail, the interrupt/resume flow, degraded MCP servers, SSE streaming, error mapping and rate limiting.
 - The frontend suite mocks `fetch` with chunked SSE streams and tests the full draft → approve flow, validation and error display.
 - [GitHub Actions](.github/workflows/ci.yml) runs both suites on every push and pull request, then builds both Docker images with layer caching.
+
+## Trajectory evaluation
+
+For a multi-agent system the final text is not enough: a plan can read well after calling agents it did not need, or skip the approval step. `evals/` runs 16 requests against the **real LLM** and checks the **path** the graph took with code, without an LLM judge.
+
+| Check | What it verifies |
+|---|---|
+| Guardrail | Off-topic, harmful and prompt-injection requests are blocked before any agent runs |
+| Agent selection | The specialists a request needs are selected, and the ones it does not need are left out |
+| Path | The nodes actually executed follow the supervisor's plan, in order |
+| Tools | No tool is called by an agent that was not selected |
+| Constraints | The supervisor extracts the right airports (IATA) and budget |
+| Human-in-the-loop | Every valid request stops for approval; after approval or feedback the final plan follows it |
+
+The specialists' external APIs are **stubbed by default**: the trajectory depends on the LLM's decisions, and a real run would spend the AviationStack free plan (100 requests a month). `--live-tools` runs the same set end to end on the real MCP servers.
+
+```bash
+python -m evals.run                          # 16 cases, real LLM, stub tools
+python -m evals.run --category guardrail     # one category
+python -m evals.run --live-tools             # real MCP servers (spends API quotas)
+python -m evals.run --delay 15 --min-pass 0.9   # spaced out for the Groq free tier, CI gate
+```
+
+The last full run is in [`evals/results/latest.md`](evals/results/latest.md), with the agents selected, the path, the LLM calls and the tokens of every case.
+
+**Results.** The latest full run passes 16 of 16 cases: 4 of 4 harmful or off-topic requests blocked in under 2 seconds with no agent or tool run, every needed specialist selected, every valid request paused for approval. A request uses 3.3 LLM calls on average (about 1,800 input and 2,000 output tokens) with a median latency of 7 s until the approval pause.
+
+**What it showed.**
+- **Routing varies between runs.** In an earlier run the supervisor also selected the hotel agent for "what will the weather be in Marrakech and how much should I plan?". The plan was not wrong, but it cost two unneeded LLM calls. This is why the set checks agents a request does not need, not only the ones it does.
+- **The Groq free tier is the weak point.** One request was rejected for asking 9,506 tokens against the 8,000 tokens-per-minute limit, which failed the whole plan: TripMate has a single LLM provider, unlike the other projects of this portfolio that fail over across four. A simple flight request also took 5 LLM calls instead of 3, which points to the answer-continuation step growing the prompt. Both are the next robustness work.
+
+`.github/workflows/eval.yml` runs the set by hand and every Monday, with stub tools, and fails below 90 %. It needs the `GROQ_API_KEY` secret (and optionally `LANGSMITH_API_KEY`).
 
 ## Deployment
 
@@ -414,7 +447,7 @@ On the streaming endpoints, failures that happen mid-run arrive as an `error` ev
 - **Per-instance rate limiting.** The limiter is in memory; several API instances would need a shared store such as Redis.
 - **No authentication.** The API is public, protected only by rate limiting and CORS.
 - **Single revision round.** After feedback, the final plan is generated once without a second approval.
-- **Groq free tier.** `openai/gpt-oss-120b` is limited to 8,000 tokens per minute on the free tier; heavy use triggers `503 llm_rate_limited`.
+- **Groq free tier, single provider.** `openai/gpt-oss-120b` is limited to 8,000 tokens per minute on the free tier; heavy use triggers `503 llm_rate_limited`, and a single oversized request fails the plan (see [Trajectory evaluation](#trajectory-evaluation)). There is no fallback provider yet.
 
 ## Roadmap
 
@@ -422,7 +455,8 @@ On the streaming endpoints, failures that happen mid-run arrive as an `error` ev
 - [ ] Real fares and connecting itineraries (e.g. Amadeus or Duffel)
 - [ ] Multiple revision rounds before finalizing
 - [ ] Parallel execution of independent specialists
-- [ ] Offline evaluation set for plan quality
+- [x] Trajectory evaluation (agent selection, path, approval step)
+- [ ] Fallback LLM provider and token budget per request
 - [ ] LangSmith tracing dashboard and metrics
 - [ ] User accounts and saved trips
 
