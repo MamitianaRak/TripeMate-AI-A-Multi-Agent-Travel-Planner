@@ -222,3 +222,6 @@ __marimo__/
 .streamlit/secrets.toml
 
 .vscode
+
+# Evaluation runs: one JSON per run stays local, latest.md (last full run) is committed
+evals/results/*.json
