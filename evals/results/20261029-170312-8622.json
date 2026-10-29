@@ -1,0 +1,87 @@
+{
+  "run_id": "20261029-170312-8622",
+  "started": "20261029-170312",
+  "dataset_version": 1,
+  "model": "openai/gpt-oss-120b",
+  "tools": "stubs",
+  "summary": {
+    "guardrail_ok": [
+      0.0,
+      1
+    ],
+    "required_ok": [
+      null,
+      0
+    ],
+    "unwanted_ok": [
+      null,
+      0
+    ],
+    "path_ok": [
+      0.0,
+      1
+    ],
+    "tools_ok": [
+      0.0,
+      1
+    ],
+    "constraints_ok": [
+      null,
+      0
+    ],
+    "paused_ok": [
+      null,
+      0
+    ],
+    "resume_ok": [
+      null,
+      0
+    ],
+    "passed": [
+      0.0,
+      1
+    ]
+  },
+  "rows": [
+    {
+      "id": "hitl-revise",
+      "category": "human-in-the-loop",
+      "question": "Plan 3 days in Prague, mid-range budget.",
+      "seconds": 38.9,
+      "error": "APIStatusError: Error code: 413 - {'error': {'message': 'Request too large for model `openai/gpt-oss-120b` in organization `org_01m3sh1e1veeqsnqzmemyvs683` service tier `on_demand` on tokens per minute (TPM): Limit 8000, Requested 9506, please reduce your message size and try again. Need more tokens? Upgrade to Dev Tier today at https://console.groq.com/settings/billing', 'type': 'tokens', 'code': 'rate_limit_exceeded'}}",
+      "allowed": null,
+      "selected_agents": [],
+      "trip_constraints": {},
+      "path": [
+        "supervisor",
+        "hotel_agent"
+      ],
+      "tool_calls": [
+        "search_hotels"
+      ],
+      "paused_for_approval": false,
+      "approved": null,
+      "final_response": "",
+      "llm_calls": 5,
+      "input_tokens": 4189,
+      "output_tokens": 6392,
+      "score": {
+        "selected": [],
+        "guardrail_ok": false,
+        "required_ok": null,
+        "unwanted_ok": null,
+        "missing_agents": [],
+        "extra_agents": [],
+        "path_ok": false,
+        "stray_tools": [
+          "search_hotels"
+        ],
+        "tools_ok": false,
+        "constraints_ok": null,
+        "paused_ok": null,
+        "resume_ok": null,
+        "passed": false
+      }
+    }
+  ]
+}
