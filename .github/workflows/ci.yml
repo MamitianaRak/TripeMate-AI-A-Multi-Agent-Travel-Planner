@@ -21,8 +21,8 @@ jobs:
           cache: pip
           cache-dependency-path: requirements*.txt
       - run: pip install -r requirements-dev.txt
-      - run: ruff check app tests
-      - run: ruff format --check app tests
+      - run: ruff check app tests evals
+      - run: ruff format --check app tests evals
       # No network or API keys needed: the suite uses a fake LLM and fake MCP tools.
       - run: pytest --cov=app --cov-report=term-missing --cov-report=xml
       - uses: actions/upload-artifact@v4
