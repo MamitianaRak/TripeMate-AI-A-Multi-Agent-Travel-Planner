@@ -39,6 +39,8 @@ class Settings(BaseSettings):
     tavily_api_key: str = ""
     aviationstack_api_key: str = ""
     openweather_api_key: str = ""
+    # Per MCP call, including the first start of a stdio server (uvx may download it).
+    mcp_timeout_seconds: float = 60.0
 
     # HTTP
     cors_origins: str = "http://localhost:5173"

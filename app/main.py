@@ -58,14 +58,20 @@ def build_production_service(settings: Settings):
     checkpointer = PostgresSaver(pool)
     checkpointer.setup()
 
+    toolbox = McpToolbox(build_mcp_client(settings), timeout=settings.mcp_timeout_seconds)
     graph = build_travel_graph(
         llm=build_llm(settings),
-        tools=McpToolbox(build_mcp_client(settings)),
+        tools=toolbox,
         checkpointer=checkpointer,
         prompt_budget_tokens=settings.prompt_budget_tokens,
         max_continuations=settings.llm_max_continuations,
     )
-    return TravelService(graph), pool.close
+
+    def cleanup() -> None:
+        toolbox.close()
+        pool.close()
+
+    return TravelService(graph), cleanup
 
 
 def create_app(

@@ -1,5 +1,7 @@
 """MCP toolbox and custom weather server, with the network mocked out."""
 
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
 import pytest
@@ -55,6 +57,38 @@ def test_one_broken_server_does_not_affect_others():
     with pytest.raises(ConnectionError):
         toolbox.departures("DAC")
     assert toolbox.forecast("Tokyo") == "get_forecast result"
+
+
+def test_toolbox_works_when_called_from_a_running_event_loop():
+    # An async caller (async endpoint, graph.ainvoke, notebook) already runs a loop in this thread.
+    toolbox = McpToolbox(FakeMcpClient({"weather": [FakeTool("get_forecast")]}))
+
+    async def caller():
+        return toolbox.forecast("Tokyo")
+
+    assert asyncio.run(caller()) == "get_forecast result"
+
+
+def test_toolbox_can_be_called_from_parallel_threads():
+    forecast = FakeTool("get_forecast")
+    toolbox = McpToolbox(FakeMcpClient({"weather": [forecast]}))
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        results = list(pool.map(toolbox.forecast, ["Tokyo", "Paris", "Lima", "Oslo"]))
+
+    assert results == ["get_forecast result"] * 4
+    assert sorted(a["city"] for a in forecast.received) == ["Lima", "Oslo", "Paris", "Tokyo"]
+
+
+def test_a_hanging_tool_call_times_out():
+    class HangingTool(FakeTool):
+        async def ainvoke(self, args: dict):
+            await asyncio.sleep(10)
+
+    toolbox = McpToolbox(FakeMcpClient({"weather": [HangingTool("get_forecast")]}), timeout=0.2)
+
+    with pytest.raises(TimeoutError, match="get_forecast"):
+        toolbox.forecast("Tokyo")
 
 
 def test_departures_requests_the_free_plan_timetable_tool():
